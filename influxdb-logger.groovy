@@ -24,14 +24,15 @@
  *
  *   Modifcation History
  *   Date       Name		Change 
+ *   2022-05-25 Jake Welch      Update to use v2 APIs, cleanup
  *   2019-02-02 Dan Ogorchock	Use asynchttpPost() instead of httpPost() call
  *   2019-09-09 Caleb Morse     Support deferring writes and doing buld writes to influxdb
  *****************************************************************************************************************/
 definition(
-    name: "InfluxDB Logger",
+    name: "InfluxDB v2 Logger",
     namespace: "nowhereville",
     author: "Joshua Marker (tooluser)",
-    description: "Log SmartThings device states to InfluxDB",
+    description: "Log Hubitat device states to InfluxDB v2",
     category: "My Apps",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
@@ -42,12 +43,12 @@ definition(
 	@Field static java.util.concurrent.Semaphore mutex = new java.util.concurrent.Semaphore(1)
 
 preferences {
-      	page(name: "newPage")
+      	page(name: "settingsPage")
 }
 
 
-def newPage() {
-    dynamicPage(name: "newPage", title: "New Settings Page", install: true, uninstall: true) {
+def settingsPage() {
+    dynamicPage(name: "settingsPage", title: "Settings", install: true, uninstall: true) {
 	    section("General:") {
     	    //input "prefDebugMode", "bool", title: "Enable debug logging?", defaultValue: true, displayDuringSetup: true
         	input (
@@ -71,12 +72,23 @@ def newPage() {
     	section ("InfluxDB Database:") {
 	        input "prefDatabaseHost", "text", title: "Host", defaultValue: "192.168.1.100", required: true
     	    input "prefDatabasePort", "text", title: "Port", defaultValue: "8086", required: true
-        	input "prefDatabaseName", "text", title: "Database Name", defaultValue: "Hubitat", required: true
-        	input "prefDatabaseUser", "text", title: "Username", required: false
-        	input "prefDatabasePass", "text", title: "Password", required: false
+    	    input "prefDatabaseVersion", "enum", title: "InfluxDB Version", defaultValue: "2", required: true, submitOnChange: true, 
+                options: ["1",  "2"]
+         	if(prefDatabaseVersion == "1")
+		    {
+        	    input "prefDatabaseName", "text", title: "Database Name", defaultValue: "Hubitat", required: true
+        	    input "prefDatabaseUser", "text", title: "Username", required: false
+        	    input "prefDatabasePass", "text", title: "Password", required: false
+            }
+            else
+            {
+        	    input "prefOrg", "text", title: "Organization Name", required: true
+        	    input "prefBucket", "text", title: "Bucket Name", required: true
+        	    input "prefApiToken", "text", title: "API Token", required: false
+            }
     	}
     
-  	section("Polling / Write frequency:") {
+  	    section("Polling / Write frequency:") {
 	        input "prefSoftPollingInterval", "number", title:"Soft-Polling interval (minutes)", defaultValue: 10, required: true
 
     	    input "writeInterval", "enum", title:"How often to write to db (minutes)", defaultValue: "5", required: true,
@@ -172,31 +184,6 @@ def newPage() {
 					}
             	}
 			}
-			/*
-			section("allo") {
-				state.pollForAttr=[:]
-				section("$softPolling", hideable: true) {
-					state.selectedAttr.each { entry ->
-						deviceId = entry.key
-						state.temp=[]
-						index = 0
-						entry.value.each{ theAttr ->
-								input name:"pollForDev$deviceId$theAttr", type: "enum", title: "$theAttr", options: [0,1,2,3,4,5,10,15,20,30,45,90,120], multiple: true, required: false, submitOnChange: true
-						
-						}
-						
-						
-						log.debug "$deviceId - $theAttr"
-						log.debug "allo"
-						log.debug settings["pollForDev"+deviceId+theAttr]
-						state.temp[index] =  settings["pollForDev"+deviceId+theAttr]
-						index = index+1
-						log.debug state.temp
-						//state.pollForAttr[deviceId][theAttr] = settings["pollForDev"+deviceId+theAttr]
-
-					}
-				}
-			} */
 		}
 		
 	}
@@ -207,7 +194,6 @@ def getDeviceObj(id) {
     def found
     settings.allDevices.each { device -> 
         if (device.getId() == id) {
-            //log.debug "Found at $device for $id with id: ${device.id}"
             found = device
         }
     }
@@ -217,7 +203,7 @@ def getDeviceObj(id) {
 
 
 /*****************************************************************************************************************
- *  SmartThings System Commands:
+ *  System Commands:
  *****************************************************************************************************************/
 
 /**
@@ -263,16 +249,36 @@ def updated() {
     // Database config:
     state.databaseHost = settings.prefDatabaseHost
     state.databasePort = settings.prefDatabasePort
-    state.databaseName = settings.prefDatabaseName
-    state.databaseUser = settings.prefDatabaseUser
-    state.databasePass = settings.prefDatabasePass 
     
-    state.path = "/write?db=${state.databaseName}"
-    state.headers = [:] 
-    //state.headers.put("HOST", "${state.databaseHost}:${state.databasePort}")
-    //state.headers.put("Content-Type", "application/x-www-form-urlencoded")
-    if (state.databaseUser && state.databasePass) {
-        state.headers.put("Authorization", encodeCredentialsBasic(state.databaseUser, state.databasePass))
+    state.headers = [:]
+        
+    if(prefDatabaseVersion == "1")
+    {
+        state.databaseName = settings.prefDatabaseName
+        state.writeUri = "http://${state.databaseHost}:${state.databasePort}/write?db=${state.databaseName}"
+
+        if (state.databaseUser && state.databasePass) {
+            state.headers.put("Authorization", encodeCredentialsBasic(state.databaseUser, state.databasePass))
+        }
+        else
+        {
+            logger("No database username and password found; auth must be disabled", "warn")
+        }
+    }
+    else
+    {
+        state.databaseOrg = settings.prefOrg
+        state.databaseBucket = settings.prefBucket
+        state.databaseApiToken = settings.prefApiToken
+        state.writeUri = "http://${state.databaseHost}:${state.databasePort}/api/v2/write?org=${state.databaseOrg}&bucket=${state.databaseBucket}"
+    
+        if (state.databaseApiToken) {
+            state.headers.put("Authorization", "Token ${state.databaseApiToken}")
+        }
+        else
+        {
+            logger("No API Token found", "warn")
+        }
     }
 
     // Build array of device collections and the attributes we want to report on for that collection:
@@ -350,12 +356,13 @@ def handleAppTouch(evt) {
  *  Log Mode changes.
  **/
 def handleModeEvent(evt) {
-    logger("handleModeEvent(): Mode changed to: ${evt.value}","info")
+    logger("handleModeEvent(): Mode changed to: ${evt.value}", "debug")
 
     def locationId = escapeStringForInfluxDB(location.id.toString())
     def locationName = escapeStringForInfluxDB(location.name)
-    def mode = '"' + escapeStringForInfluxDB(evt.value) + '"'
-	def data = "_stMode,locationId=${locationId},locationName=${locationName} mode=${mode}"
+    def mode = escapeStringForInfluxDB(evt.value)
+    // TODO: rename _st to _he, however this will break existing users
+	def data = "_stMode,locationId=${locationId},locationName=${locationName} mode=\"${mode}\""
     queueToInfluxDb(data)
 }
 
@@ -372,19 +379,17 @@ def handleModeEvent(evt) {
  *   - https://docs.influxdata.com/influxdb/v0.10/guides/writing_data/
  **/
 def handleEvent(evt) {
-    //logger("handleEvent(): $evt.unit","info")
-    logger("handleEvent(): $evt.displayName($evt.name:$evt.unit) $evt.value","info")
+    logger("handleEvent(): $evt.displayName($evt.name:$evt.unit) $evt.value", "debug")
     
     // Build data string to send to InfluxDB:
     //  Format: <measurement>[,<tag_name>=<tag_value>] field=<field_value>
     //    If value is an integer, it must have a trailing "i"
-    //    If value is a string, it must be enclosed in double quotes.
-    String measurement = evt.name
+    //    If value is a string, it must be enclosed in double quotes
+    //    Strings need special characters such as spaces escaped
+    String measurement = escapeStringForInfluxDB(evt.name)
     // tags:
     String deviceId = evt?.deviceId?.toString()
     String deviceName = escapeStringForInfluxDB(evt?.displayName)
-    String groupId = evt?.device?.device?.groupId?.toString()
-    String groupName = escapeStringForInfluxDB(getGroupName(evt?.device?.device?.groupId))
     String hubId = evt?.device?.device?.hubId?.toString()
     String hubName = escapeStringForInfluxDB(evt?.device?.device?.hub?.name?.toString())
     // Don't pull these from the evt.device as the app itself will be associated with one location.
@@ -395,135 +400,114 @@ def handleEvent(evt) {
     String value = escapeStringForInfluxDB(evt.value)
     String valueBinary = ''
     
-    String data = "${measurement},deviceId=${deviceId},deviceName=${deviceName},groupId=${groupId},groupName=${groupName},hubId=${hubId},hubName=${hubName},locationId=${locationId},locationName=${locationName}"
+    String data = "${measurement},deviceId=${deviceId},deviceName=${deviceName},hubId=${hubId},hubName=${hubName},locationId=${locationId},locationName=${locationName}"
     
     // Unit tag and fields depend on the event type:
     //  Most string-valued attributes can be translated to a binary value too.
     if ('acceleration' == evt.name) { // acceleration: Calculate a binary value (active = 1, inactive = 0)
         unit = 'acceleration'
-        value = '"' + value + '"'
         valueBinary = ('active' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('alarm' == evt.name) { // alarm: Calculate a binary value (strobe/siren/both = 1, off = 0)
         unit = 'alarm'
-        value = '"' + value + '"'
         valueBinary = ('off' == evt.value) ? '0i' : '1i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('button' == evt.name) { // button: Calculate a binary value (held = 1, pushed = 0)
         unit = 'button'
-        value = '"' + value + '"'
         valueBinary = ('pushed' == evt.value) ? '0i' : '1i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('carbonMonoxide' == evt.name) { // carbonMonoxide: Calculate a binary value (detected = 1, clear/tested = 0)
         unit = 'carbonMonoxide'
-        value = '"' + value + '"'
         valueBinary = ('detected' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('consumableStatus' == evt.name) { // consumableStatus: Calculate a binary value ("good" = 1, "missing"/"replace"/"maintenance_required"/"order" = 0)
         unit = 'consumableStatus'
-        value = '"' + value + '"'
         valueBinary = ('good' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('contact' == evt.name) { // contact: Calculate a binary value (closed = 1, open = 0)
         unit = 'contact'
-        value = '"' + value + '"'
         valueBinary = ('closed' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('door' == evt.name) { // door: Calculate a binary value (closed = 1, open/opening/closing/unknown = 0)
         unit = 'door'
-        value = '"' + value + '"'
         valueBinary = ('closed' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('lock' == evt.name) { // door: Calculate a binary value (locked = 1, unlocked = 0)
         unit = 'lock'
-        value = '"' + value + '"'
         valueBinary = ('locked' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('motion' == evt.name) { // Motion: Calculate a binary value (active = 1, inactive = 0)
         unit = 'motion'
-        value = '"' + value + '"'
         valueBinary = ('active' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('mute' == evt.name) { // mute: Calculate a binary value (muted = 1, unmuted = 0)
         unit = 'mute'
-        value = '"' + value + '"'
         valueBinary = ('muted' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('presence' == evt.name) { // presence: Calculate a binary value (present = 1, not present = 0)
         unit = 'presence'
-        value = '"' + value + '"'
         valueBinary = ('present' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('shock' == evt.name) { // shock: Calculate a binary value (detected = 1, clear = 0)
         unit = 'shock'
-        value = '"' + value + '"'
         valueBinary = ('detected' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('sleeping' == evt.name) { // sleeping: Calculate a binary value (sleeping = 1, not sleeping = 0)
         unit = 'sleeping'
-        value = '"' + value + '"'
         valueBinary = ('sleeping' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('smoke' == evt.name) { // smoke: Calculate a binary value (detected = 1, clear/tested = 0)
         unit = 'smoke'
-        value = '"' + value + '"'
         valueBinary = ('detected' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('sound' == evt.name) { // sound: Calculate a binary value (detected = 1, not detected = 0)
         unit = 'sound'
-        value = '"' + value + '"'
         valueBinary = ('detected' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('switch' == evt.name) { // switch: Calculate a binary value (on = 1, off = 0)
         unit = 'switch'
-        value = '"' + value + '"'
         valueBinary = ('on' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('tamper' == evt.name) { // tamper: Calculate a binary value (detected = 1, clear = 0)
         unit = 'tamper'
-        value = '"' + value + '"'
         valueBinary = ('detected' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('thermostatMode' == evt.name) { // thermostatMode: Calculate a binary value (<any other value> = 1, off = 0)
         unit = 'thermostatMode'
-        value = '"' + value + '"'
         valueBinary = ('off' == evt.value) ? '0i' : '1i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('thermostatFanMode' == evt.name) { // thermostatFanMode: Calculate a binary value (<any other value> = 1, off = 0)
         unit = 'thermostatFanMode'
-        value = '"' + value + '"'
         valueBinary = ('off' == evt.value) ? '0i' : '1i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
-    else if ('thermostatOperatingState' == evt.name) { // thermostatOperatingState: Calculate a binary value (heating = 1, <any other value> = 0)
+    else if ('thermostatOperatingState' == evt.name) { // thermostatOperatingState: Calculate a binary value (heating = 1, cooling = 2, <any other value> = 0)
         unit = 'thermostatOperatingState'
-        value = '"' + value + '"'
-        valueBinary = ('heating' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        valueBinary = ('cooling' == evt.value) ? '2i' : ('heating' == evt.value) ? '1i' : '0i'
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('thermostatSetpointMode' == evt.name) { // thermostatSetpointMode: Calculate a binary value (followSchedule = 0, <any other value> = 1)
         unit = 'thermostatSetpointMode'
-        value = '"' + value + '"'
         valueBinary = ('followSchedule' == evt.value) ? '0i' : '1i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('threeAxis' == evt.name) { // threeAxis: Format to x,y,z values.
         unit = 'threeAxis'
@@ -535,52 +519,45 @@ def handleEvent(evt) {
     }
     else if ('touch' == evt.name) { // touch: Calculate a binary value (touched = 1, "" = 0)
         unit = 'touch'
-        value = '"' + value + '"'
         valueBinary = ('touched' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('optimisation' == evt.name) { // optimisation: Calculate a binary value (active = 1, inactive = 0)
         unit = 'optimisation'
-        value = '"' + value + '"'
         valueBinary = ('active' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('windowFunction' == evt.name) { // windowFunction: Calculate a binary value (active = 1, inactive = 0)
         unit = 'windowFunction'
-        value = '"' + value + '"'
         valueBinary = ('active' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('touch' == evt.name) { // touch: Calculate a binary value (touched = 1, <any other value> = 0)
         unit = 'touch'
-        value = '"' + value + '"'
         valueBinary = ('touched' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('water' == evt.name) { // water: Calculate a binary value (wet = 1, dry = 0)
         unit = 'water'
-        value = '"' + value + '"'
         valueBinary = ('wet' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     else if ('windowShade' == evt.name) { // windowShade: Calculate a binary value (closed = 1, <any other value> = 0)
         unit = 'windowShade'
-        value = '"' + value + '"'
         valueBinary = ('closed' == evt.value) ? '1i' : '0i'
-        data += ",unit=${unit} value=${value},valueBinary=${valueBinary}"
+        data += ",unit=${unit} value=\"${value}\",valueBinary=${valueBinary}"
     }
     // Catch any other event with a string value that hasn't been handled:
     else if (evt.value ==~ /.*[^0-9\.,-].*/) { // match if any characters are not digits, period, comma, or hyphen.
 		logger("handleEvent(): Found a string value that's not explicitly handled: Device Name: ${deviceName}, Event Name: ${evt.name}, Value: ${evt.value}","warn")
-        value = '"' + value + '"'
-        data += ",unit=${unit} value=${value}"
+        data += ",unit=${unit} value=\"${value}\""
     }
     // Catch any other general numerical event (carbonDioxide, power, energy, humidity, level, temperature, ultravioletIndex, voltage, etc).
     else {
         data += ",unit=${unit} value=${value}"
     }
     
-    //logger("$data","info")
+    logger("$data", "trace")
     
     // Queue data for later write to InfluxDB
     queueToInfluxDb(data)
@@ -599,7 +576,7 @@ def handleEvent(evt) {
  *  Forces data to be posted to InfluxDB (even if an event has not been triggered).
  *  Doesn't poll devices, just builds a fake event to pass to handleEvent().
  *
- *  Also calls LogSystemProperties().
+ *  Also calls logSystemProperties().
  **/
 def softPoll() {
     logger("softPoll()","trace")
@@ -614,7 +591,7 @@ def softPoll() {
         	    devs.each { d ->
             	    da.attributes.each { attr ->
                 	    if (d.hasAttribute(attr) && d.latestState(attr)?.value != null) {
-                    	    logger("softPoll(): Softpolling device ${d} for attribute: ${attr}","info")
+                    	    logger("softPoll(): Softpolling device ${d} for attribute: ${attr}", "debug")
                         	// Send fake event to handleEvent():
 
 	                        handleEvent([
@@ -635,7 +612,7 @@ def softPoll() {
 			d = getDeviceObj(entry.key)
 			entry.value.each{ attr ->
             	if (d.hasAttribute(attr) && d.latestState(attr)?.value != null) {
-            		logger("softPoll(): Softpolling device ${d} for attribute: ${attr}","info")
+            		logger("softPoll(): Softpolling device ${d} for attribute: ${attr}", "debug")
                 	// Send fake event to handleEvent():
                 	handleEvent([
 	                	name: attr, 
@@ -654,25 +631,25 @@ def softPoll() {
 /**
  *  logSystemProperties()
  *
- *  Generates measurements for SmartThings system (hubs and locations) properties.
+ *  Generates measurements for Hubitat system (hubs and locations) properties.
  **/
 def logSystemProperties() {
     logger("logSystemProperties()","trace")
 
-    def locationId = '"' + escapeStringForInfluxDB(location.id.toString()) + '"'
-    def locationName = '"' + escapeStringForInfluxDB(location.name) + '"'
+    def locationId = escapeStringForInfluxDB(location.id.toString())
+    def locationName = escapeStringForInfluxDB(location.name)
 
 	// Location Properties:
     if (prefLogLocationProperties) {
         try {
-            def tz = '"' + escapeStringForInfluxDB(location.timeZone.ID.toString()) + '"'
-            def mode = '"' + escapeStringForInfluxDB(location.mode) + '"'
+            def tz = escapeStringForInfluxDB(location.timeZone.ID.toString())
+            def mode = escapeStringForInfluxDB(location.mode)
             def hubCount = location.hubs.size()
             def times = getSunriseAndSunset()
-            def srt = '"' + times.sunrise.format("HH:mm", location.timeZone) + '"'
-            def sst = '"' + times.sunset.format("HH:mm", location.timeZone) + '"'
+            def srt = times.sunrise.format("HH:mm", location.timeZone)
+            def sst = times.sunset.format("HH:mm", location.timeZone)
 
-            def data = "_heLocation,locationId=${locationId},locationName=${locationName},latitude=${location.latitude},longitude=${location.longitude},timeZone=${tz} mode=${mode},hubCount=${hubCount}i,sunriseTime=${srt},sunsetTime=${sst}"
+            def data = "_heLocation,locationId=\"${locationId}\",locationName=\"${locationName}\",latitude=${location.latitude},longitude=${location.longitude},timeZone=\"${tz}\" mode=\"${mode}\",hubCount=${hubCount}i,sunriseTime=\"${srt}\",sunsetTime=\"${sst}\""
             queueToInfluxDb(data)
             //log.debug("LocationData = ${data}")
         } catch (e) {
@@ -684,25 +661,16 @@ def logSystemProperties() {
     if (prefLogHubProperties) {
        	location.hubs.each { h ->
         	try {
-                def hubId = '"' + escapeStringForInfluxDB(h.id.toString()) + '"'
-                def hubName = '"' + escapeStringForInfluxDB(h.name.toString()) + '"'
-                def hubIP = '"' + escapeStringForInfluxDB(h.localIP.toString()) + '"'
-                //def hubStatus = '"' + escapeStringForInfluxDB(h.status) + '"'
-                //def batteryInUse = ("false" == h.hub.getDataValue("batteryInUse")) ? "0i" : "1i"
-                // See fix here for null time returned: https://github.com/codersaur/SmartThings/pull/33/files
-                //def hubUptime = h.hub.getDataValue("uptime") + 'i'
-                //def hubLastBootUnixTS = h.hub.uptime + 'i'
-                //def zigbeePowerLevel = h.hub.getDataValue("zigbeePowerLevel") + 'i'
-                //def zwavePowerLevel =  '"' + escapeStringForInfluxDB(h.hub.getDataValue("zwavePowerLevel")) + '"'
-                def firmwareVersion =  '"' + escapeStringForInfluxDB(h.firmwareVersionString) + '"'
+                def hubId = escapeStringForInfluxDB(h.id.toString())
+                def hubName = escapeStringForInfluxDB(h.name.toString())
+                def hubIP = escapeStringForInfluxDB(h.localIP.toString())
+                def hubUptime = h.uptime
+                def firmwareVersion =  escapeStringForInfluxDB(h.firmwareVersionString)
                 
-                def data = "_heHub,locationId=${locationId},locationName=${locationName},hubId=${hubId},hubName=${hubName},hubIP=${hubIP} "
-                data += "firmwareVersion=${firmwareVersion}"
-                // See fix here for null time returned: https://github.com/codersaur/SmartThings/pull/33/files
-                //data += "status=${hubStatus},batteryInUse=${batteryInUse},uptime=${hubUptime},zigbeePowerLevel=${zigbeePowerLevel},zwavePowerLevel=${zwavePowerLevel},firmwareVersion=${firmwareVersion}"
-                //data += "status=${hubStatus},batteryInUse=${batteryInUse},uptime=${hubLastBootUnixTS},zigbeePowerLevel=${zigbeePowerLevel},zwavePowerLevel=${zwavePowerLevel},firmwareVersion=${firmwareVersion}"
+                def data = "_heHub,locationId=\"${locationId}\",locationName=\"${locationName}\",hubId=\"${hubId}\",hubName=\"${hubName}\",hubIP=\"${hubIP}\" "
+                data += "firmwareVersion=\"${firmwareVersion}\",uptime=${hubUptime}i"
+                
                 queueToInfluxDb(data)
-                //log.debug("HubData = ${data}")
             } catch (e) {
 				logger("logSystemProperties(): Unable to log Hub properties: ${e}","error")
         	}
@@ -719,26 +687,23 @@ def queueToInfluxDb(data) {
     int queueSize = 0
 	try {
 		mutex.acquire()
-		//if(!mutex.tryAcquire()) {
-		//	logger("Error 1 in queueToInfluxDb","Warning")
-		//	mutex.release()
-		//}
 		
 		loggerQueue.offer(data)
 		queueSize = loggerQueue.size()
+        logger("Queue size: ${queueSize}", "trace")
 		
 		// Give some visibility at the interface level
-		state.queuedData = loggerQueue.toArray()
+		state.queuedData = loggerQueue.toArray()    
 	} 
 	catch(e) {
-		logger("Error 2 in queueToInfluxDb","Warning")
+		logger("Error 2 in queueToInfluxDb: ${e}", "warn")
 	} 
 	finally {
 		mutex.release()
 	}
 	
     if (queueSize > 100) {
-        logger("Queue size is too big, triggering write now", "info")
+        logger("Queue size is too big, triggering write now", "warn")
         writeQueuedDataToInfluxDb()
     }
 }
@@ -748,23 +713,19 @@ def writeQueuedDataToInfluxDb() {
 	
 	try {
 		mutex.acquire()
-		//if(!mutex.tryAcquire()) {
-		//	logger("Error 1 in writeQueuedDataToInfluxDb","Warning")
-		//	mutex.release()
-		//}
 				
 		if(loggerQueue.size() == 0) {
-            logger("No queued data to write to InfluxDB", "info")
+            logger("No queued data to write to InfluxDB", "debug")
             return
 		}
-        logger("Writing queued data of size ${loggerQueue.size()} out", "info")
+        logger("Writing queued data (count: ${loggerQueue.size()})", "info")
 		a = loggerQueue.toArray() 
 		writeData = a.join('\n')
 		loggerQueue.clear()
 		state.queuedData = []
 	}	   
 	catch(e) {
-		logger("Error 2 in writeQueuedDataToInfluxDb","Warning")
+		logger("Error 2 in writeQueuedDataToInfluxDb: ${e}", "warn")
 	} 
 	finally {
 		mutex.release()
@@ -777,42 +738,20 @@ def writeQueuedDataToInfluxDb() {
  *  postToInfluxDB()
  *
  *  Posts data to InfluxDB.
- *
- *  Uses hubAction instead of httpPost() in case InfluxDB server is on the same LAN as the Smartthings Hub.
  **/
-def postToInfluxDB(data) {
-    logger("postToInfluxDB(): Posting data to InfluxDB: Host: ${state.databaseHost}, Port: ${state.databasePort}, Database: ${state.databaseName}, Data: [${data}]","info")
-    //logger("$state", "info")
-    //try {
-    //    //def hubAction = new physicalgraph.device.HubAction(
-    //    def hubAction = new hubitat.device.HubAction(
-    //    	[
-    //            method: "POST",
-    //            path: state.path,
-    //            body: data,
-    //            headers: state.headers
-    //        ],
-    //        null,
-    //        [ callback: handleInfluxResponse ]
-    //    )
-	//	
-    //    sendHubCommand(hubAction)
-    //    //logger("hubAction command sent", "info")
-    //}
-    //catch (Exception e) {
-	//	logger("postToInfluxDB(): Exception ${e} on ${hubAction}","error")
-    //}
+def postToInfluxDB(data) {    
+    logger("postToInfluxDB(): Posting data to InfluxDB: Uri: ${state.writeUri}, Data: [${data}]", "debug")
 
-    // Hubitat Async http Post
-     
+    // Hubitat Async http Post     
 	try {
 		def postParams = [
-			uri: "http://${state.databaseHost}:${state.databasePort}/write?db=${state.databaseName}" ,
-			requestContentType: 'application/json',
+            uri: "${state.writeUri}",
+			requestContentType: 'text/plain; charset=utf-8', // Request data is text, response will be json
 			contentType: 'application/json',
 			headers: state.headers,
 			body : data
 			]
+        logger("$postParams", "trace")
 		asynchttpPost('handleInfluxResponse', postParams) 
 	} catch (e) {	
 		logger("postToInfluxDB(): Something went wrong when posting: ${e}","error")
@@ -826,12 +765,14 @@ def postToInfluxDB(data) {
  *  Handles response from post made in postToInfluxDB().
  **/
 def handleInfluxResponse(hubResponse, data) {
-    //logger("postToInfluxDB(): status of post call is: ${hubResponse.status}", "info")
-    if(hubResponse.status >= 400) {
-		logger("postToInfluxDB(): Something went wrong! Response from InfluxDB: Status: ${hubResponse.status}, Headers: ${hubResponse.headers}, Data: ${data}","error")
+    if(hubResponse.status == 204) {
+        logger("postToInfluxDB(): status of post call is: ${hubResponse.status}, Headers: ${hubResponse.headers}, Data: ${data}", "debug")
+    }
+    else
+    {        
+		logger("postToInfluxDB(): Something went wrong! Response from InfluxDB: Status: ${hubResponse.status}, Headers: ${hubResponse.headers}, Data: ${data}", "error")
     }
 }
-
 
 /*****************************************************************************************************************
  *  Private Helper Functions:
@@ -844,7 +785,7 @@ def handleInfluxResponse(hubResponse, data) {
  *   softPoll() - Run every {state.softPollingInterval} minutes.
  **/
 private manageSchedules() {
-	logger("manageSchedules()","trace")
+	logger("manageSchedules()", "trace")
 
     // Generate a random offset (1-60):
     Random rand = new Random(now())
@@ -855,13 +796,13 @@ private manageSchedules() {
         unschedule(writeQueuedDataToInfluxDb)
     }
     catch(e) {
-        // logger("manageSchedules(): Unschedule failed!","error")
+        logger("manageSchedules(): Unschedule failed! ${e}", "error")
     }
 
     randomOffset = rand.nextInt(50)
     if (state.softPollingInterval > 0) {
         
-        logger("manageSchedules(): Scheduling softpoll to run every ${state.softPollingInterval} minutes (offset of ${randomOffset} seconds).","trace")
+        logger("manageSchedules(): Scheduling softpoll to run every ${state.softPollingInterval} minutes (offset of ${randomOffset} seconds).", "trace")
         schedule("${randomOffset} 0/${state.softPollingInterval} * * * ?", "softPoll")
     }
     
@@ -893,7 +834,7 @@ private manageSubscriptions() {
         	devs = settings."${da.devices}"
         	if (devs && (da.attributes)) {
             	da.attributes.each { attr ->
-                	logger("manageSubscriptions(): Subscribing to attribute: ${attr}, for devices: ${da.devices}","info")
+                	logger("manageSubscriptions(): Subscribing to attribute: ${attr}, for devices: ${da.devices}", "debug")
                 	// There is no need to check if all devices in the collection have the attribute.
                 	subscribe(devs, attr, handleEvent)
 				}
@@ -903,7 +844,7 @@ private manageSubscriptions() {
 		state.selectedAttr.each{ entry -> 
 			d = getDeviceObj(entry.key)
 			entry.value.each{ attr ->
-				logger("manageSubscriptions(): Subscribing to attribute: ${attr}, for device: ${d}","info")
+				logger("manageSubscriptions(): Subscribing to attribute: ${attr}, for device: ${d}", "debug")
 				subscribe(d, attr, handleEvent)
 			}
 		}
@@ -979,23 +920,3 @@ private String escapeStringForInfluxDB(String str) {
     }
     return str
 }
-
-/**
- *  getGroupName()
- *
- *  Get the name of a 'Group' (i.e. Room) from its ID.
- *  
- *  This is done manually as there does not appear to be a way to enumerate
- *  groups from a SmartApp currently.
- * 
- *  GroupIds can be obtained from the SmartThings IDE under 'My Locations'.
- *
- *  See: https://community.smartthings.com/t/accessing-group-within-a-smartapp/6830
- **/
-private getGroupName(id) {
-
-    if (id == null) {return 'Home'}
-    //else if (id == 'XXXXXXXXXXXXX') {return 'Group'}
-    else {return 'Unknown'}    
-} 
-
