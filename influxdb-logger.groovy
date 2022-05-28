@@ -7,7 +7,7 @@
  *  Original Author: David Lomas (codersaur)
  *  Hubitat Elevation version maintained by Joshua Marker (@tooluser)
  *
- *  Description: A SmartApp to log Hubitat device states to an InfluxDB database.
+ *  Description: An App to log Hubitat device states to an InfluxDB database.
  *  See Codersaur's github repo for more information.
  *
  *  NOTE: Hubitat does not currently support group names.
@@ -22,17 +22,17 @@
  *   on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *   for the specific language governing permissions and limitations under the License.
  *
- *   Modifcation History
- *   Date       Name		Change 
+ *   Modification History
+ *   Date       Name		    Change 
  *   2022-05-25 Jake Welch      Update to use v2 APIs, cleanup
  *   2019-02-02 Dan Ogorchock	Use asynchttpPost() instead of httpPost() call
  *   2019-09-09 Caleb Morse     Support deferring writes and doing buld writes to influxdb
  *****************************************************************************************************************/
 definition(
-    name: "InfluxDB v2 Logger",
+    name: "InfluxDB Logger",
     namespace: "nowhereville",
     author: "Joshua Marker (tooluser)",
-    description: "Log Hubitat device states to InfluxDB v2",
+    description: "Log Hubitat device states to InfluxDB",
     category: "My Apps",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
@@ -45,7 +45,6 @@ definition(
 preferences {
       	page(name: "settingsPage")
 }
-
 
 def settingsPage() {
     dynamicPage(name: "settingsPage", title: "Settings", install: true, uninstall: true) {
@@ -189,7 +188,6 @@ def settingsPage() {
 	}
 }
 
-
 def getDeviceObj(id) {
     def found
     settings.allDevices.each { device -> 
@@ -199,8 +197,6 @@ def getDeviceObj(id) {
     }
     return found
 }
-
-
 
 /*****************************************************************************************************************
  *  System Commands:
@@ -563,7 +559,6 @@ def handleEvent(evt) {
     queueToInfluxDb(data)
 }
 
-
 /*****************************************************************************************************************
  *  Main Commands:
  *****************************************************************************************************************/
@@ -907,7 +902,6 @@ private encodeCredentialsBasic(username, password) {
  *  Further info: https://docs.influxdata.com/influxdb/v0.10/write_protocols/write_syntax/
  **/
 private String escapeStringForInfluxDB(String str) {
-    //logger("$str", "info")
     if (str) {
         str = str.replaceAll(" ", "\\\\ ") // Escape spaces.
         str = str.replaceAll(",", "\\\\,") // Escape commas.
