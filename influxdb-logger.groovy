@@ -30,8 +30,8 @@
  *****************************************************************************************************************/
 definition(
     name: "InfluxDB Logger",
-    namespace: "nowhereville",
-    author: "Joshua Marker (tooluser)",
+    namespace: "jake9190",
+    author: "Jake",
     description: "Log Hubitat device states to InfluxDB",
     category: "My Apps",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
@@ -72,12 +72,13 @@ def settingsPage() {
 	        input "prefDatabaseHost", "text", title: "Host", defaultValue: "192.168.1.100", required: true
     	    input "prefDatabasePort", "text", title: "Port", defaultValue: "8086", required: true
     	    input "prefDatabaseVersion", "enum", title: "InfluxDB Version", defaultValue: "2", required: true, submitOnChange: true, 
-                options: ["1",  "2"]
+                options: ["1" : "v1.x",
+                          "2" : "v2.x"]
          	if(prefDatabaseVersion == "1")
 		    {
         	    input "prefDatabaseName", "text", title: "Database Name", defaultValue: "Hubitat", required: true
-        	    input "prefDatabaseUser", "text", title: "Username", required: false
-        	    input "prefDatabasePass", "text", title: "Password", required: false
+        	    input "prefDatabaseUser", "text", title: "Username", defaultValue: "", required: false
+        	    input "prefDatabasePass", "text", title: "Password", defaultValue: "", required: false
             }
             else
             {
@@ -396,7 +397,13 @@ def handleEvent(evt) {
     String value = escapeStringForInfluxDB(evt.value)
     String valueBinary = ''
     
-    String data = "${measurement},deviceId=${deviceId},deviceName=${deviceName},hubId=${hubId},hubName=${hubName},locationId=${locationId},locationName=${locationName}"
+    String source = "event"
+    
+    if (evt.source) {
+        source = evt.source
+    }
+    
+    String data = "${measurement},deviceId=${deviceId},deviceName=${deviceName},hubId=${hubId},hubName=${hubName},locationId=${locationId},locationName=${locationName},source=${source}"
     
     // Unit tag and fields depend on the event type:
     //  Most string-valued attributes can be translated to a binary value too.
@@ -545,7 +552,7 @@ def handleEvent(evt) {
     }
     // Catch any other event with a string value that hasn't been handled:
     else if (evt.value ==~ /.*[^0-9\.,-].*/) { // match if any characters are not digits, period, comma, or hyphen.
-		logger("handleEvent(): Found a string value that's not explicitly handled: Device Name: ${deviceName}, Event Name: ${evt.name}, Value: ${evt.value}","warn")
+		logger("handleEvent(): Found a string value that's not explicitly handled: Device Name: ${deviceName}, Event Name: ${evt.name}, Value: ${evt.value}", "debug")
         data += ",unit=${unit} value=\"${value}\""
     }
     // Catch any other general numerical event (carbonDioxide, power, energy, humidity, level, temperature, ultravioletIndex, voltage, etc).
@@ -595,7 +602,8 @@ def softPoll() {
             	                unit: d.latestState(attr)?.unit,
                 	            device: d,
                     	        deviceId: d.id,
-                        	    displayName: d.displayName
+                        	    displayName: d.displayName,
+                                source: "poll"
                         	])
 						}
 					}
@@ -615,7 +623,8 @@ def softPoll() {
         	            unit: d.latestState(attr)?.unit,
             	        device: d,
                 	    deviceId: d.id,
-                    	displayName: d.displayName
+                    	displayName: d.displayName,
+                        source: "poll"
                 	])
 				}
 			}
@@ -697,7 +706,7 @@ def queueToInfluxDb(data) {
 		mutex.release()
 	}
 	
-    if (queueSize > 100) {
+    if (queueSize > 150) {
         logger("Queue size is too big, triggering write now", "warn")
         writeQueuedDataToInfluxDb()
     }
