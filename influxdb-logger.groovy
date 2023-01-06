@@ -614,7 +614,7 @@ def softPoll() {
 		state.selectedAttr.each{ entry -> 
 			d = getDeviceObj(entry.key)
 			entry.value.each{ attr ->
-            	if (d.hasAttribute(attr) && d.latestState(attr)?.value != null) {
+            	if (d != null && d.hasAttribute(attr) && d.latestState(attr)?.value != null) {
             		logger("softPoll(): Softpolling device ${d} for attribute: ${attr}", "debug")
                 	// Send fake event to handleEvent():
                 	handleEvent([
@@ -707,7 +707,7 @@ def queueToInfluxDb(data) {
 	}
 	
     if (queueSize > 150) {
-        logger("Queue size is too big, triggering write now", "warn")
+        logger("Queue size is too big, triggering write now", "debug")
         writeQueuedDataToInfluxDb()
     }
 }
@@ -722,7 +722,7 @@ def writeQueuedDataToInfluxDb() {
             logger("No queued data to write to InfluxDB", "debug")
             return
 		}
-        logger("Writing queued data (count: ${loggerQueue.size()})", "info")
+        logger("Writing queued data (count: ${loggerQueue.size()})", "debug")
 		a = loggerQueue.toArray() 
 		writeData = a.join('\n')
 		loggerQueue.clear()
