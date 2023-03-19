@@ -163,20 +163,20 @@ def settingsPage() {
 		
 			section() {
 				state.selectedAttr=[:]
-				settings.allDevices.each { deviceName ->
+				settings.allDevices.sort { it.label ?: it.name }.each { deviceName ->
 					if(deviceName) {
 						deviceId = deviceName.getId()
         				attr = deviceName.getSupportedAttributes().unique()
 						if(attr) {
 							state.options =[]
 							index = 0
-							attr.each {at->
+                            attr.sort { it?.name }.each {at->
 								state.options[index] = "${at}"
 								index = index+1
 							}
 			
 							section("$deviceName", hideable: true) {
-								input name:"attrForDev$deviceId", type: "enum", title: "$deviceName", options: state.options, multiple: true, required: false, submitOnChange: true
+								input name:"attrForDev$deviceId", type: "enum", title: "$deviceName", options: state.options, multiple: true, required: false, submitOnChange: false
 							}
 				
 							state.selectedAttr[deviceId] = settings["attrForDev"+deviceId]
